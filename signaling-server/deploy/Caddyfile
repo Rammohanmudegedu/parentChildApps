@@ -1,0 +1,4 @@
+# Automatic HTTPS for the signaling relay. Replace the host name.
+signal.your-domain.com {
+  reverse_proxy 127.0.0.1:8080
+}

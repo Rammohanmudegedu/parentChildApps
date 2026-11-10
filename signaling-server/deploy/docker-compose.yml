@@ -1,0 +1,24 @@
+# Signaling relay + coturn on one small VM (e.g. Azure B1s / any 1 vCPU VPS).
+# Put a TLS reverse proxy (Caddy/nginx) in front of signaling so phones use wss://
+services:
+  signaling:
+    build: ..
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_URLS: turn:${TURN_HOST}:3478?transport=udp,turn:${TURN_HOST}:3478?transport=tcp,turns:${TURN_HOST}:5349?transport=tcp
+      TRUST_PROXY: "1"
+    ports: ["127.0.0.1:8080:8080"]
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes: ["./turnserver.conf:/etc/coturn/turnserver.conf:ro"]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: host
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data"]
+volumes:
+  caddy_data: {}
