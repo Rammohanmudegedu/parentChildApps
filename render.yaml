@@ -1,0 +1,16 @@
+# One-tap deploy of the Smart Parent relay on Render's free plan.
+# Open: https://render.com/deploy?repo=https://github.com/Rammohanmudegedu/parentChildApps
+services:
+  - type: web
+    name: smartparent-relay
+    runtime: node
+    plan: free
+    rootDir: signaling-server
+    buildCommand: npm ci
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY
+        value: "1"
