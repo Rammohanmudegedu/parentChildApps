@@ -1,6 +1,8 @@
 # Builds the Smart Parent (parent) and Smart Parent Child APKs.
 #
 # Run it: GitHub → Actions → "Build APKs" → Run workflow (or push to main).
+# Repo layout: either the unzipped project at the repo root, or just SmartParent-source.zip
+# committed at the root (this workflow unzips it), plus this file at .github/workflows/build-apks.yml.
 # Get the APKs: the run's "Artifacts" section, or the GitHub Release it creates.
 #
 # One-time setup (recommended, see docs/BUILD_APK.md):
@@ -28,12 +30,8 @@ on:
         default: true
   push:
     branches: [main]
-    paths:
-      - "parent-app/**"
-      - "child-app/**"
-      - "shared/**"
-      - "scripts/**"
-      - ".github/workflows/build-apks.yml"
+    paths-ignore:
+      - "**.md"
 
 concurrency:
   group: build-apks-${{ github.ref }}
@@ -49,11 +47,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Unpack source (works with the zip committed as-is or a nested smart-parent/ folder)
+        run: |
+          if [ ! -d parent-app ]; then
+            Z=$(ls *.zip 2>/dev/null | head -1 || true)
+            if [ -n "$Z" ]; then echo "Unzipping $Z"; unzip -q -o "$Z"; fi
+            if [ -d smart-parent ]; then cp -a smart-parent/. . ; fi
+          fi
+          test -d parent-app && test -d child-app || { echo "::error::parent-app/ and child-app/ not found. Commit SmartParent-source.zip or its unzipped contents."; ls -la; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: signaling-server/package-lock.json
       - name: Shared crypto & protocol tests
         working-directory: shared
         run: npm test
@@ -79,12 +83,18 @@ jobs:
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Unpack source (works with the zip committed as-is or a nested smart-parent/ folder)
+        run: |
+          if [ ! -d parent-app ]; then
+            Z=$(ls *.zip 2>/dev/null | head -1 || true)
+            if [ -n "$Z" ]; then echo "Unzipping $Z"; unzip -q -o "$Z"; fi
+            if [ -d smart-parent ]; then cp -a smart-parent/. . ; fi
+          fi
+          test -d parent-app && test -d child-app || { echo "::error::parent-app/ and child-app/ not found. Commit SmartParent-source.zip or its unzipped contents."; ls -la; exit 1; }
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: ${{ matrix.app }}/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
