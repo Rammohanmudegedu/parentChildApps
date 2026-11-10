@@ -101,8 +101,22 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK (preinstalled on GitHub runners)
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then echo "::error::Android SDK not found on this runner ($SDK)"; exit 1; fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1)"
+          echo "Using SDK at $SDK, sdkmanager: ${SDKM:-none}"
+          if [ -n "$SDKM" ]; then
+            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+            "$SDKM" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools" > /dev/null 2>&1 \
+              || echo "::warning::sdkmanager could not pre-install SDK 36; Gradle will download what it needs"
+          fi
+          echo "sdk.dir=$SDK" > "${{ matrix.app }}/android/local.properties"
+          ls "$SDK/platforms" || true
 
       - name: Set up Gradle (cache)
         uses: gradle/actions/setup-gradle@v4
