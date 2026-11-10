@@ -1,0 +1,173 @@
+# Builds the Smart Parent (parent) and Smart Parent Child APKs.
+#
+# Run it: GitHub → Actions → "Build APKs" → Run workflow (or push to main).
+# Get the APKs: the run's "Artifacts" section, or the GitHub Release it creates.
+#
+# One-time setup (recommended, see docs/BUILD_APK.md):
+#   Repository secrets  ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#     → signed release APKs that install as updates over each other (pairing is kept).
+#     Without them you get debug APKs; uninstall the old app before installing a new build.
+#   Repository variable SIGNAL_URL (e.g. wss://signal.your-domain.com) → default relay on the child phone.
+
+name: Build APKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      signal_url:
+        description: "Default relay address shown on the child phone (wss://…). Empty = use the SIGNAL_URL repo variable."
+        required: false
+        default: ""
+      allow_cleartext:
+        description: "Allow ws:// relays (LAN testing only, not for real use)"
+        type: boolean
+        default: false
+      publish_release:
+        description: "Also attach the APKs to a GitHub Release (easy download on a phone)"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "parent-app/**"
+      - "child-app/**"
+      - "shared/**"
+      - "scripts/**"
+      - ".github/workflows/build-apks.yml"
+
+concurrency:
+  group: build-apks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: signaling-server/package-lock.json
+      - name: Shared crypto & protocol tests
+        working-directory: shared
+        run: npm test
+      - name: Signaling server tests
+        working-directory: signaling-server
+        run: |
+          npm ci
+          npm test
+
+  build:
+    name: Build ${{ matrix.app }}
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [parent-app, child-app]
+    env:
+      VERSION_CODE: ${{ github.run_number }}
+      SIGNAL_URL: ${{ inputs.signal_url || vars.SIGNAL_URL }}
+      ALLOW_CLEARTEXT: ${{ inputs.allow_cleartext && 'true' || 'false' }}
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle (cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install npm dependencies
+        working-directory: ${{ matrix.app }}
+        run: npm ci
+
+      - name: Apply build configuration
+        run: node scripts/ci-configure.mjs ${{ matrix.app }}
+
+      - name: Copy shared code, vendor libraries and sync Capacitor
+        working-directory: ${{ matrix.app }}
+        run: npm run sync
+
+      - name: Write signing key
+        if: env.HAS_KEYSTORE == 'true'
+        working-directory: ${{ matrix.app }}/android
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/smartparent.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/smartparent.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Build APK
+        working-directory: ${{ matrix.app }}/android
+        run: |
+          chmod +x gradlew
+          if [ "$HAS_KEYSTORE" = "true" ]; then TASK=assembleRelease; KIND=release; else TASK=assembleDebug; KIND=debug; fi
+          ./gradlew "$TASK" --stacktrace --no-daemon
+          case "${{ matrix.app }}" in parent-app) NAME=SmartParent ;; *) NAME=SmartParentChild ;; esac
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp app/build/outputs/apk/$KIND/app-$KIND.apk "$GITHUB_WORKSPACE/out/$NAME-1.0.${VERSION_CODE}-$KIND.apk"
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/smartparent.jks" "${{ matrix.app }}/android/keystore.properties"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-apk
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Smart Parent build ${{ github.run_number }}
+          prerelease: true
+          files: apks/*.apk
+          body: |
+            **SmartParent-…apk** → install on the parent phone.
+            **SmartParentChild-…apk** → install on the child phone.
+            Default relay: `${{ inputs.signal_url || vars.SIGNAL_URL || 'not set (enter it on the child phone)' }}`
+            Cleartext ws:// allowed: ${{ inputs.allow_cleartext }}
+            Built from ${{ github.sha }}.
